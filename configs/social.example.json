@@ -1,0 +1,23 @@
+{
+    "affinityEnabled":  true,
+    "slangEnabled":  true,
+    "personaEvolutionEnabled":  true,
+    "cardEvolutionEnabled":  true,
+    "triggerWindowMinutes":  5,
+    "evolutionRefreshEvery":  60,
+    "personaNote":  "",
+    "mood":  {
+                 "enabled":  true,
+                 "durationHours":  4
+             },
+    "guard":  {
+                  "muteCheck":  true,
+                  "muteCacheSeconds":  20,
+                  "maxRepliesPerMinute":  4
+              },
+    "vision":  {
+                   "enabled":  true,
+                   "model":  "vision-api",
+                   "maxImages":  3
+               }
+}

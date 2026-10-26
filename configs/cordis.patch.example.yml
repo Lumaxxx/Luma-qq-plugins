@@ -1,0 +1,67 @@
+# 桥配置示例（复制为 <QQ_HOME>/home/profiles/web/cordis.patch.yml）
+# 说明：
+#   - apiKey 用环境变量注入，不写明文（启动脚本会从 ayu-secret.env 读取）
+#   - 绝对路径里的 <BOT_DATA> 请替换成实际的机器人数据目录
+- id: qq-groupmate
+  name: dsh-plugin-qq-groupmate
+  config:
+    mode: reverse
+    listenHost: 127.0.0.1
+    listenPort: 3001
+    defaultCharacter: dafeiyu
+    provider: deepseek-account
+    model: deepseek-flash
+    commandPrefix: "."
+    admins: []
+    trigger:
+      mention: true
+      prefixes: []
+      randomChance: 0.03
+      cooldownSeconds: 0
+      replyToSelf: true
+      privateChat: true
+    context:
+      maxTurns: 60
+      maxChars: 12000
+    vision:
+      enabled: true
+      maxImages: 3
+      maxBytes: 12582912
+    voice:
+      enabled: false
+    mood:
+      enabled: true
+      durationHours: 4
+    guard:
+      muteCheck: true
+      muteCacheSeconds: 20
+      maxRepliesPerMinute: 4
+    apiProviders:
+      - id: deepseek-api
+        protocol: openai
+        baseUrl: https://api.deepseek.com/v1
+        apiKey: !!js process.env.DEEPSEEK_API_KEY || ''
+    models:
+      - name: vision-api
+        provider: deepseek-api
+        model: deepseek-flash
+    modelSlots:
+      vision:
+        model: vision-api
+        backup: ''
+    stickers:
+      enabled: true
+      dir: <BOT_DATA>\stickers
+      maxListed: 40
+      probability: 0
+    people:
+      enabled: true
+      crossGroupEnabled: true
+      privateToGroup: true
+      surfaceTtlMinutes: 1440
+    learner:
+      enabled: true
+      batchMessages: 60
+      keepMessages: 40
+      maxChars: 600
+      bannedWords: []

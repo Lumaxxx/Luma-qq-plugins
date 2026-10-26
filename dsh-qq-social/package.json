@@ -1,0 +1,21 @@
+{
+  "name": "dsh-qq-social",
+  "version": "0.1.0",
+  "description": "QQ 群里大肥鱼的拟人化设置（好感度 / 黑话 / 人格演化 / 角色卡写回），设置页独立分栏",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "license": "MIT"
+}

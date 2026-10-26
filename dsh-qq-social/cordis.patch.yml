@@ -1,0 +1,5 @@
+# 组合包补丁：把本插件插进桌面端 profile
+- insert:
+    - id: qq-social
+      name: 'dsh-qq-social'
+      config: {}

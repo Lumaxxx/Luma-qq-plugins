@@ -1,0 +1,17 @@
+{
+  "name": "dsh-qq-amem",
+  "version": "0.1.0",
+  "description": "阿圆外挂增强：记忆蒸馏 + 主动发言（不改 qq-groupmate 代码）",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "license": "MIT"
+}

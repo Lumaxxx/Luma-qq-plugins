@@ -1,0 +1,27 @@
+# 把外挂增强插件插进 QQ 桥的 profile
+- insert:
+    - id: qq-amem
+      name: 'dsh-qq-amem'
+      config:
+        enabled: true
+        dataDir: '<QQ_HOME>\home\qq-groupmate'
+        character: dafeiyu
+        memory:
+          enabled: true
+          scanMinutes: 30
+          minNewMessages: 25
+          maxEvents: 3
+          maxTokens: 400
+          provider: deepseek-account
+          model: deepseek-flash
+        proactive:
+          enabled: true
+          groups: ['<GROUP_ID>']
+          quietMinutes: 90
+          maxPerDay: 2
+          activeHours: [9, 23]
+          apiBase: 'http://127.0.0.1:6098'
+          apiToken: '<NAPCAT_TOKEN>'
+          maxChars: 120
+          provider: deepseek-account
+          model: deepseek-flash
