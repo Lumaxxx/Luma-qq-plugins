@@ -9,6 +9,7 @@
  * @module dsh-plugin-qq-groupmate
  */
 import { existsSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import z from '@deepseek-ai/schemastery';
@@ -21,6 +22,9 @@ import { MoodStore } from "./mood.js";
 import { ExternalHistoryQueue } from "./external-history.js";
 import { BiliMemes } from "./bili-memes.js";
 import { WebAgent } from "./web-agent.js";
+import { LongMemory } from "./long-memory.js";
+import { VisionCache } from "./vision-cache.js";
+import { StickerIndex } from "./image-fingerprint.js";
 import { KnowledgeBase, resolveKnowledgeSettings } from "./knowledge.js";
 import { ProtocolSideLauncher } from "./launcher.js";
 import { createModelResolver } from "./models.js";
@@ -55,10 +59,11 @@ import { ReminderStore, defaultReminderSettings } from "./reminders.js";
 import { ReminderScheduler } from "./reminder-scheduler.js";
 import { ToolRunner } from "./agent-tools.js";
 /** Cordis 插件名。 */
-/** [local patch] 读取桌面端「拟人化」设置（<QQ_HOME>\social.json）。 */
+/** [local patch] 读取桌面端「拟人化」设置（C:\Users\pc\dsh-qq\social.json）。 */
 function readSocialOverrides() {
     try {
-        const file = '<QQ_HOME>\\social.json';
+        const file = process.env.DSH_SOCIAL_JSON
+            ?? join(process.env.DSH_QQ_HOME ?? join(homedir(), 'dsh-qq'), 'social.json');
         if (existsSync(file)) {
             const parsed = JSON.parse(readFileSync(file, 'utf8'));
             if (parsed !== null && typeof parsed === 'object')
@@ -99,6 +104,8 @@ export const Config = z.object({
     maxTokens: z.number().step(1).min(16).max(32768).default(512),
     commandPrefix: z.string().default('.'),
     admins: z.array(z.string()).default([]),
+    // [local patch 2026-10-28] 静默忽略的测试消息（命中就整条丢弃，不回复不记日志）
+    ignoreTexts: z.array(z.string()).default(['冷落测试']),
     trigger: z.object({
         mention: z.boolean().default(true),
         prefixes: z.array(z.string()).default([]),
@@ -1128,6 +1135,32 @@ function createRuntime(ctx, config, logger, reportStatus, onModelBackup) {
         maxSteps: Number(webCfg.maxSteps) > 0 ? Number(webCfg.maxSteps) : 12,
         timeoutMinutes: Number(webCfg.timeoutMinutes) > 0 ? Number(webCfg.timeoutMinutes) : 4,
     });
+    // [local patch 2026-10-27] 识图与记忆的开关（设置页 LUMA 可调）
+    const mediaCfg = (socialOverrides.media !== null && typeof socialOverrides.media === 'object') ? socialOverrides.media : {};
+    const recallCfg = (socialOverrides.memoryRecall !== null && typeof socialOverrides.memoryRecall === 'object') ? socialOverrides.memoryRecall : {};
+    // [local patch 2026-10-28] 语言卫生开关（LUMA）
+    const languageCfg = (socialOverrides.language !== null && typeof socialOverrides.language === 'object') ? socialOverrides.language : {};
+    // [local patch 2026-10-27] 长期记忆（dsh-plugin-memory）
+    const longMemory = new LongMemory({
+        logger,
+        enabled: recallCfg.enabled !== false,
+        factCooldownHours: Number(recallCfg.factCooldownHours) > 0 ? Number(recallCfg.factCooldownHours) : 3,
+        recentLines: Number(recallCfg.recentLines) > 0 ? Number(recallCfg.recentLines) : 2,
+    });
+    // [local patch 2026-10-27] 识图缓存（同一张图只识一次）
+    const visionCache = new VisionCache({ file: `${dataDir}/vision-cache.json`, logger });
+    // [local patch 2026-10-27] 表情包指纹索引（命中就不调视觉模型）
+    const stickerIndex = new StickerIndex({
+        dir: stickerConfig.dir ?? '',
+        file: `${dataDir}/sticker-hash.json`,
+        logger,
+    });
+    try {
+        stickerIndex.load();
+    }
+    catch (error) {
+        logger.warn('qq-groupmate: 表情包索引构建失败（忽略）：%s', String(error));
+    }
     if (peopleSettings.enabled) {
         logger.info('qq-groupmate: 群友档案已开启（跨群 %s，遗忘曲线半衰期 %s 天，重要度 %s 以上永久保留）', peopleSettings.crossGroupEnabled ? '开' : '关', String(peopleSettings.decayHalfLifeDays), String(peopleSettings.keepImportance));
     }
@@ -1194,6 +1227,16 @@ function createRuntime(ctx, config, logger, reportStatus, onModelBackup) {
         mood,
         biliMemes,
         webAgent,
+        longMemory,
+        visionCache,
+        stickerIndex,
+        mediaSettings: mediaCfg,
+        languageSettings: languageCfg,
+        penaltySettings: {
+            frequency: Number(languageCfg.frequencyPenalty ?? config.penalties?.frequency),
+            presence: Number(languageCfg.presencePenalty ?? config.penalties?.presence),
+        },
+        wordClipsFile: `${dataDir}/word-clips.json`,
         guard: {
             muteCheck: guardSettings.muteCheck !== false,
             muteCacheSeconds: guardSettings.muteCacheSeconds ?? 20,
@@ -1280,6 +1323,8 @@ function createRuntime(ctx, config, logger, reportStatus, onModelBackup) {
         wife,
         tarot,
         prefix: config.commandPrefix ?? '.',
+        // [local patch 2026-10-28] 静默忽略的测试消息
+        config,
     });
     // 设置页「清空记忆」写入的令牌：新令牌才执行一次。
     const resetTokens = {};

@@ -44,6 +44,7 @@ window.__ModuleLoader__.load({
 
 		function Section() {
 			const [config, setConfig] = React.useState(null);
+			const [tab, setTab] = React.useState("basic");
 			const [status, setStatus] = React.useState("正在读取…");
 			const [busy, setBusy] = React.useState(false);
 
@@ -246,8 +247,30 @@ window.__ModuleLoader__.load({
 			return h("div", { style: { display: "flex", flexDirection: "column", gap: 4, padding: "4px 2px" } },
 				h("div", { style: { fontSize: 15, fontWeight: 600, color: "var(--dsw-alias-label-primary)", marginBottom: 4 } }, "LUMA（QQ 群大肥鱼）"),
 				h("div", { style: { fontSize: 12, color: "var(--dsw-alias-label-secondary)", marginBottom: 8 } },
-					"这里调的是 QQ 群里那只大肥鱼；保存在 <QQ_HOME>\\social.json"),
+					"这里调的是 QQ 群里那只大肥鱼；配置保存在 DSH_QQ_HOME/social.json"),
 
+				// ── 分类导航 ─────────────────────────────────────────
+				h("div", { style: { display: "flex", flexWrap: "wrap", gap: 6, margin: "6px 0 10px" } },
+					...[
+						["basic", "基础与人格"],
+						["vision", "识图"],
+						["memory", "记忆"],
+						["language", "语言卫生"],
+						["data", "上网与数据"],
+					].map(([key, label]) => h("button", {
+						key,
+						type: "button",
+						onClick: () => setTab(key),
+						style: {
+							height: 28, padding: "0 12px", borderRadius: 999, cursor: "pointer", fontSize: 12,
+							border: "1px solid var(--dsw-alias-border-subtle, rgba(127,127,127,.3))",
+							background: tab === key ? "var(--dsw-alias-interactive-bg-accent, #3b82f6)" : "transparent",
+							color: tab === key ? "#fff" : "var(--dsw-alias-label-primary)",
+						},
+					}, label)),
+				),
+
+				...(tab === "basic" ? [
 				...ROWS.map(([key, label, hint]) => h("div", { key, style: rowStyle },
 					h("div", { style: { minWidth: 0 } },
 						h("div", { style: labelStyle }, label),
@@ -260,7 +283,6 @@ window.__ModuleLoader__.load({
 						style: { width: 18, height: 18, marginTop: 2 },
 					}),
 				)),
-
 				h("div", { style: rowStyle },
 					h("div", { style: { minWidth: 0 } },
 						h("div", { style: labelStyle }, "对话窗口（分钟）"),
@@ -272,7 +294,6 @@ window.__ModuleLoader__.load({
 						style: inputStyle,
 					}),
 				),
-
 				h("div", { style: rowStyle },
 					h("div", { style: { minWidth: 0 } },
 						h("div", { style: labelStyle }, "演化刷新（条）"),
@@ -284,7 +305,6 @@ window.__ModuleLoader__.load({
 						style: inputStyle,
 					}),
 				),
-
 				h("div", { style: { display: "flex", flexDirection: "column", gap: 6, padding: "12px 0" } },
 					h("div", { style: labelStyle }, "手动人格补充"),
 					h("div", { style: hintStyle }, "写在这里的话会拼在人设提示最后，优先于自动学习；留空表示不加"),
@@ -295,10 +315,8 @@ window.__ModuleLoader__.load({
 						style: Object.assign({}, inputStyle, { width: "100%", height: "auto", padding: "8px 10px", resize: "vertical", fontFamily: "inherit", lineHeight: 1.6 }),
 					}),
 				),
-
 				// ── 情绪与守卫（2026-10-25 新增）─────────────────────────
 				h("div", { style: { fontSize: 13, fontWeight: 600, color: "var(--dsw-alias-label-primary)", paddingTop: 10 } }, "情绪与守卫"),
-
 				...[
 					["moodEnabled", "情绪系统", "被夸/被怼/被刁难时改变语气，会按时过期（只影响语气，不改人设）"],
 					["guardMuteCheck", "禁言检测", "自己被禁言时不生成回复，省 token"],
@@ -314,7 +332,6 @@ window.__ModuleLoader__.load({
 						style: { width: 18, height: 18, marginTop: 2 },
 					}),
 				)),
-
 				h("div", { style: rowStyle },
 					h("div", { style: { minWidth: 0 } },
 						h("div", { style: labelStyle }, "情绪持续（小时）"),
@@ -326,7 +343,6 @@ window.__ModuleLoader__.load({
 						style: inputStyle,
 					}),
 				),
-
 				h("div", { style: rowStyle },
 					h("div", { style: { minWidth: 0 } },
 						h("div", { style: labelStyle }, "每分钟回复上限"),
@@ -338,7 +354,9 @@ window.__ModuleLoader__.load({
 						style: inputStyle,
 					}),
 				),
+				] : []),
 
+				...(tab === "vision" ? [
 				// ── 识图（2026-10-25 新增）─────────────────────────────
 				h("div", { style: { fontSize: 13, fontWeight: 600, color: "var(--dsw-alias-label-primary)", paddingTop: 10 } }, "识图"),
 
@@ -379,7 +397,206 @@ window.__ModuleLoader__.load({
 						style: inputStyle,
 					}),
 				),
+				h("div", { style: rowStyle },
+					h("div", { style: { minWidth: 0 } },
+						h("div", { style: labelStyle }, "识图缓存"),
+						h("div", { style: hintStyle }, "同一张图只识一次，之后直接引用上次的描述（省调用）"),
+					),
+					h("input", {
+						type: "checkbox",
+						checked: config.mediaCache !== false,
+						onChange: (event) => patch("mediaCache", event.target.checked),
+						style: { width: 18, height: 18, marginTop: 2 },
+					}),
+				),
 
+				h("div", { style: rowStyle },
+					h("div", { style: { minWidth: 0 } },
+						h("div", { style: labelStyle }, "本地 OCR"),
+						h("div", { style: hintStyle }, "先用本机 Umi-OCR 把图里的字读出来（图片不出本机）"),
+					),
+					h("input", {
+						type: "checkbox",
+						checked: config.mediaOcr !== false,
+						onChange: (event) => patch("mediaOcr", event.target.checked),
+						style: { width: 18, height: 18, marginTop: 2 },
+					}),
+				),
+
+				h("div", { style: rowStyle },
+					h("div", { style: { minWidth: 0 } },
+						h("div", { style: labelStyle }, "OCR 地址"),
+						h("div", { style: hintStyle }, "Umi-OCR 的 HTTP 接口，默认 http://127.0.0.1:1224"),
+					),
+					h("input", {
+						type: "text",
+						value: config.mediaOcrUrl ?? "http://127.0.0.1:1224",
+						onChange: (event) => patch("mediaOcrUrl", event.target.value),
+						style: Object.assign({}, inputStyle, { width: 210 }),
+					}),
+				),
+
+				h("div", { style: rowStyle },
+					h("div", { style: { minWidth: 0 } },
+						h("div", { style: labelStyle }, "多图拼图"),
+						h("div", { style: hintStyle }, "一条消息 2~3 张图拼成一张再识，省一次调用"),
+					),
+					h("input", {
+						type: "checkbox",
+						checked: config.mediaGrid !== false,
+						onChange: (event) => patch("mediaGrid", event.target.checked),
+						style: { width: 18, height: 18, marginTop: 2 },
+					}),
+				),
+
+				h("div", { style: rowStyle },
+					h("div", { style: { minWidth: 0 } },
+						h("div", { style: labelStyle }, "表情包匹配"),
+						h("div", { style: hintStyle }, "本地表情库按指纹匹配，命中就不调视觉模型"),
+					),
+					h("input", {
+						type: "checkbox",
+						checked: config.mediaStickerMatch !== false,
+						onChange: (event) => patch("mediaStickerMatch", event.target.checked),
+						style: { width: 18, height: 18, marginTop: 2 },
+					}),
+				),
+				] : []),
+
+				...(tab === "memory" ? [
+				h("div", { style: rowStyle },
+					h("div", { style: { minWidth: 0 } },
+						h("div", { style: labelStyle }, "长期记忆召回"),
+						h("div", { style: hintStyle }, "被问到「还记得/刚才/别的群」时，从记忆库翻旧事"),
+					),
+					h("input", {
+						type: "checkbox",
+						checked: config.memoryRecallEnabled !== false,
+						onChange: (event) => patch("memoryRecallEnabled", event.target.checked),
+						style: { width: 18, height: 18, marginTop: 2 },
+					}),
+				),
+
+				h("div", { style: rowStyle },
+					h("div", { style: { minWidth: 0 } },
+						h("div", { style: labelStyle }, "同一件事冷却（小时）"),
+						h("div", { style: hintStyle }, "一条记忆用过之后多久内不再重复提起，1~72"),
+					),
+					h("input", {
+						type: "number", min: 1, max: 72, value: config.memoryFactCooldownHours ?? 3,
+						onChange: (event) => patch("memoryFactCooldownHours", Number(event.target.value)),
+						style: inputStyle,
+					}),
+				),
+				] : []),
+
+				...(tab === "language" ? [
+				// ── 语言卫生（2026-10-28 新增）──────────────────────────
+				h("div", { style: { fontSize: 13, fontWeight: 600, color: "var(--dsw-alias-label-primary)", paddingTop: 4 } }, "语言卫生（防复读 / 词句权重）"),
+
+				h("div", { style: rowStyle },
+					h("div", { style: { minWidth: 0 } },
+						h("div", { style: labelStyle }, "刷屏节流"),
+						h("div", { style: hintStyle }, "对方连续发相似短句时直接不接话"),
+					),
+					h("input", {
+						type: "checkbox",
+						checked: config.languageThrottle !== false,
+						onChange: (event) => patch("languageThrottle", event.target.checked),
+						style: { width: 18, height: 18, marginTop: 2 },
+					}),
+				),
+
+				h("div", { style: rowStyle },
+					h("div", { style: { minWidth: 0 } },
+						h("div", { style: labelStyle }, "防复读（字面判重）"),
+						h("div", { style: hintStyle }, "剪掉和最近几句重复的话；全重复就不接话"),
+					),
+					h("input", {
+						type: "checkbox",
+						checked: config.mediaAntiRepeat !== false,
+						onChange: (event) => patch("mediaAntiRepeat", event.target.checked),
+						style: { width: 18, height: 18, marginTop: 2 },
+					}),
+				),
+
+				h("div", { style: rowStyle },
+					h("div", { style: { minWidth: 0 } },
+						h("div", { style: labelStyle }, "词句硬删除"),
+						h("div", { style: hintStyle }, "反复出现的词句直接从输出里删掉（不靠提示词）"),
+					),
+					h("input", {
+						type: "checkbox",
+						checked: config.languageWordClip !== false,
+						onChange: (event) => patch("languageWordClip", event.target.checked),
+						style: { width: 18, height: 18, marginTop: 2 },
+					}),
+				),
+
+				h("div", { style: rowStyle },
+					h("div", { style: { minWidth: 0 } },
+						h("div", { style: labelStyle }, "恢复阈值（倍）"),
+						h("div", { style: hintStyle }, "某词出现次数降到其它词最高值的多少倍就恢复输出，1~3"),
+					),
+					h("input", {
+						type: "number", min: 1, max: 3, step: 0.1, value: config.languageClipRatio ?? 1.3,
+						onChange: (event) => patch("languageClipRatio", Number(event.target.value)),
+						style: inputStyle,
+					}),
+				),
+
+				h("div", { style: rowStyle },
+					h("div", { style: { minWidth: 0 } },
+						h("div", { style: labelStyle }, "语义自检"),
+						h("div", { style: hintStyle }, "字面不一样但意思重复时，让模型判一次 YES/NO（每轮多一次小调用）"),
+					),
+					h("input", {
+						type: "checkbox",
+						checked: config.languageSemanticCheck !== false,
+						onChange: (event) => patch("languageSemanticCheck", event.target.checked),
+						style: { width: 18, height: 18, marginTop: 2 },
+					}),
+				),
+
+				h("div", { style: rowStyle },
+					h("div", { style: { minWidth: 0 } },
+						h("div", { style: labelStyle }, "自检触发相似度"),
+						h("div", { style: hintStyle }, "字面相似度超过这个值才做语义自检，0~1（越大越省）"),
+					),
+					h("input", {
+						type: "number", min: 0, max: 1, step: 0.01, value: config.languageSemanticThreshold ?? 0.22,
+						onChange: (event) => patch("languageSemanticThreshold", Number(event.target.value)),
+						style: inputStyle,
+					}),
+				),
+
+				h("div", { style: rowStyle },
+					h("div", { style: { minWidth: 0 } },
+						h("div", { style: labelStyle }, "频率惩罚"),
+						h("div", { style: hintStyle }, "解码层压低已出现词的概率，0~2（建议 0.3~0.8）"),
+					),
+					h("input", {
+						type: "number", min: 0, max: 2, step: 0.1, value: config.languageFrequencyPenalty ?? 0.5,
+						onChange: (event) => patch("languageFrequencyPenalty", Number(event.target.value)),
+						style: inputStyle,
+					}),
+				),
+
+				h("div", { style: rowStyle },
+					h("div", { style: { minWidth: 0 } },
+						h("div", { style: labelStyle }, "存在惩罚"),
+						h("div", { style: hintStyle }, "只要说过就压一次，鼓励换话题，0~2（建议 0.1~0.4）"),
+					),
+					h("input", {
+						type: "number", min: 0, max: 2, step: 0.1, value: config.languagePresencePenalty ?? 0.2,
+						onChange: (event) => patch("languagePresencePenalty", Number(event.target.value)),
+						style: inputStyle,
+					}),
+				),
+
+				] : []),
+
+				...(tab === "data" ? [
 				// ── 上网（browser-use，2026-10-26 新增）─────────────────
 				h("div", { style: { fontSize: 13, fontWeight: 600, color: "var(--dsw-alias-label-primary)", paddingTop: 14 } }, "上网（自己开浏览器查资料）"),
 
@@ -432,20 +649,6 @@ window.__ModuleLoader__.load({
 						style: inputStyle,
 					}),
 				),
-
-				h("div", { style: { display: "flex", alignItems: "center", gap: 12, paddingTop: 12 } },
-					h("button", {
-						type: "button",
-						onClick: save,
-						disabled: busy,
-						style: {
-							height: 32, padding: "0 16px", borderRadius: 8, border: "none", cursor: busy ? "default" : "pointer",
-							background: "var(--dsw-alias-interactive-bg-accent, #3b82f6)", color: "#fff", fontSize: 13,
-						},
-					}, busy ? "保存中…" : "保存并重启 QQ 桥"),
-					h("span", { style: { fontSize: 12, color: "var(--dsw-alias-label-secondary)" } }, status),
-				),
-
 				// ── 刷B站（快捷模式）─────────────────────────────────────────
 				h("div", { style: { marginTop: 22, paddingTop: 16, borderTop: "1px solid var(--dsw-alias-border-subtle, rgba(127,127,127,.16))" } },
 					h("div", { style: { fontSize: 14, fontWeight: 600, color: "var(--dsw-alias-label-primary)", marginBottom: 4 } }, "刷B站（快捷模式）"),
@@ -514,7 +717,6 @@ window.__ModuleLoader__.load({
 							),
 						),
 				),
-
 				// ── 梗库（B站学到的）─────────────────────────────────────────
 				h("div", { style: { marginTop: 22, paddingTop: 16, borderTop: "1px solid var(--dsw-alias-border-subtle, rgba(127,127,127,.16))" } },
 					h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 } },
@@ -566,7 +768,6 @@ window.__ModuleLoader__.load({
 							memesStatus === "" ? null : h("div", { style: { fontSize: 12, color: "var(--dsw-alias-label-secondary)" } }, memesStatus),
 						),
 				),
-
 				// ── 人格卡学习记录 ──────────────────────────────────────────
 				h("div", { style: { marginTop: 22, paddingTop: 16, borderTop: "1px solid var(--dsw-alias-border-subtle, rgba(127,127,127,.16))" } },
 					h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 } },
@@ -602,7 +803,6 @@ window.__ModuleLoader__.load({
 								)),
 							)),
 				),
-
 				// ── 两张人格卡（QQ 卡 ↔ 桌面人设）──────────────────────────
 				h("div", { style: { marginTop: 22, paddingTop: 16, borderTop: "1px solid var(--dsw-alias-border-subtle, rgba(127,127,127,.16))" } },
 					h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 } },
@@ -633,7 +833,6 @@ window.__ModuleLoader__.load({
 							cardsStatus === "" ? null : h("div", { style: { color: "var(--dsw-alias-label-secondary)" } }, cardsStatus),
 						),
 				),
-
 				// ── 好感度一览 ──────────────────────────────────────────────
 				h("div", { style: { marginTop: 22, paddingTop: 16, borderTop: "1px solid var(--dsw-alias-border-subtle, rgba(127,127,127,.16))" } },
 					h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 } },
@@ -659,6 +858,20 @@ window.__ModuleLoader__.load({
 							)),
 						)
 						: null,
+				),
+				] : []),
+
+				h("div", { style: { display: "flex", alignItems: "center", gap: 12, paddingTop: 12 } },
+					h("button", {
+						type: "button",
+						onClick: save,
+						disabled: busy,
+						style: {
+							height: 32, padding: "0 16px", borderRadius: 8, border: "none", cursor: busy ? "default" : "pointer",
+							background: "var(--dsw-alias-interactive-bg-accent, #3b82f6)", color: "#fff", fontSize: 13,
+						},
+					}, busy ? "保存中…" : "保存并重启 QQ 桥"),
+					h("span", { style: { fontSize: 12, color: "var(--dsw-alias-label-secondary)" } }, status),
 				),
 			);
 		}

@@ -14,6 +14,12 @@ import { buildContextBlock, buildNameGuidance, buildStableSystemPrompt, sanitize
 import { evaluateTrigger, extractMessage } from "./trigger.js";
 import { chooseVoiceStyle, parseVoiceModeJson } from "./voice.js";
 import { collectImages, fetchImages, noteImageRejection } from "./vision.js";
+import { VisionCache } from "./vision-cache.js";
+import { ocrImage } from "./ocr.js";
+import { dHashes } from "./image-fingerprint.js";
+import { gridImages } from "./grid-image.js";
+import { stripRepeats, similarity } from "./repeat-guard.js";
+import { suspectPhrases, WordClipper, escalatingPhrases } from "./word-authority.js";
 import { DebouncedJsonFile, readJsonFile } from "./store.js";
 import { buildToolUsagePrompt, hasInformationalCalls, parseToolCalls, renderActionNotes, renderToolResults, MAX_TOOL_ROUNDS, } from "./agent-tools.js";
 export { memoryScopeOf, speakerLabel, trimHistory } from "./history.js";
@@ -63,6 +69,8 @@ export class GroupManager {
         this.llm = deps.llm;
         this.client = deps.client;
         this.logger = deps.logger;
+        // [local patch 2026-10-27] 长期记忆（dsh-plugin-memory）
+        this.longMemory = deps.longMemory;
         this.characters = deps.characters;
         this.defaults = deps.defaults;
         this.overrides = deps.overrides;
@@ -93,6 +101,18 @@ export class GroupManager {
         this.memory = deps.memory;
         this.summaries = deps.summaries;
         this.vision = deps.vision;
+        // [local patch 2026-10-27] 识图缓存
+        this.visionCache = deps.visionCache;
+        // [local patch 2026-10-27] 识图开关（LUMA）
+        this.mediaSettings = deps.mediaSettings ?? {};
+        // [local patch 2026-10-28] 解码惩罚（frequency/presence）
+        this.penaltySettings = deps.penaltySettings ?? {};
+        // [local patch 2026-10-28] 语言卫生开关（LUMA）
+        this.languageSettings = deps.languageSettings ?? {};
+        // [local patch 2026-10-28] 词句权限管理（掐掉权重过高的词）
+        this.wordClipper = new WordClipper({ file: deps.wordClipsFile, logger: deps.logger, ratio: deps.languageSettings?.clipRatio });
+        // [local patch 2026-10-27] 表情包索引
+        this.stickerIndex = deps.stickerIndex;
         this.stickers = deps.stickers;
         this.knowledge = deps.knowledge;
         this.learner = deps.learner;
@@ -560,17 +580,26 @@ export class GroupManager {
         return muted;
     }
     /** [local patch 2026-10-25] 每群每分钟回复上限（0 = 不限）。 */
-    allowReplyRate(groupId) {
+    // [local patch 2026-10-27] 直接冲她来的消息（@ / 叫名字 / 回复她）允许突破每分钟上限，
+    // 但再设一道硬顶 limit*2，防止刷屏；群里闲聊仍按原上限。
+    allowReplyRate(groupId, { bypass = false } = {}) {
         const limit = Number(this.guard?.maxRepliesPerMinute ?? 0);
         if (!(limit > 0))
             return true;
+        const hardLimit = limit * 2;
         const now = Date.now();
         const list = (this.replyStamps.get(groupId) ?? []).filter(stamp => now - stamp < 60_000);
         this.replyStamps.set(groupId, list);
-        if (list.length >= limit) {
+        if (list.length >= hardLimit) {
+            this.logger.debug?.('qq-groupmate: 群 %s 每分钟回复已达硬上限 %s，跳过', String(groupId), String(hardLimit));
+            return false;
+        }
+        if (list.length >= limit && !bypass) {
             this.logger.debug?.('qq-groupmate: 群 %s 每分钟回复已达上限 %s，跳过', String(groupId), String(limit));
             return false;
         }
+        if (list.length >= limit && bypass)
+            this.logger.info('qq-groupmate: 群 %s 已被直接叫到，突破每分钟上限（%s/%s）', String(groupId), String(list.length + 1), String(hardLimit));
         list.push(now);
         return true;
     }
@@ -720,7 +749,7 @@ export class GroupManager {
             this.logger.info('qq-groupmate: 群 %s 里本人被禁言，跳过本次生成', groupId);
             return;
         }
-        if (!this.allowReplyRate(groupId))
+        if (!this.allowReplyRate(groupId, { bypass: facts.mentioned || facts.repliedToBot }))
             return;
         if (this.busy.has(groupId))
             return;
@@ -796,6 +825,13 @@ export class GroupManager {
             return;
         this.busy.add(lockKey);
         try {
+            const privateRecent = this.record(`private:${userId}`).history.filter(entry => entry.role === 'user').slice(-2).map(entry => entry.text ?? '').join(' ');
+            const wantsRecall = /记得|记不记|刚才|刚刚|上次|之前|以前|别的群|那个群|另一个群|提过|说过|聊过/.test(text);
+            const longMemoryBlock = wantsRecall
+                ? (await this.longMemory?.recallBlock(text, privateRecent, `qq:private:${userId}`) ?? undefined)
+                : undefined;
+            if (longMemoryBlock !== undefined)
+                this.logger.info('qq-groupmate: 记忆召回 %s 字（私聊）', String(longMemoryBlock.length));
             const reply = await this.generateReply(`private:${userId}`, config, {
                 groupId: undefined,
                 groupName: undefined,
@@ -804,6 +840,7 @@ export class GroupManager {
                 speakerName: speaker,
                 userText: text,
                 senderId: userId,
+                longMemory: longMemoryBlock,
             });
             if (reply === undefined)
                 return;
@@ -823,6 +860,11 @@ export class GroupManager {
                 text: privateSticker === undefined ? reply : `${reply}\n（我刚发了一张表情包：${privateSticker}）`,
                 time: Date.now(),
             });
+            // [local patch 2026-10-27] 私聊这一轮也写进长期记忆
+            void this.longMemory?.ingest(`qq:private:${userId}`, [
+                { role: 'user', text, sender: speaker },
+                { role: 'assistant', text: reply },
+            ]);
             // 私聊同样带语音输出。
             if (this.voice?.shouldSpeak(reply) === true) {
                 void this.speakTo(`private:${userId}`, reply, chooseVoiceStyle(text, reply));
@@ -857,6 +899,14 @@ export class GroupManager {
         record.greetingDone = true;
         const recent = record.history.slice(-20);
         const members = [...new Set(recent.map(entry => speakerLabel(entry)))];
+        // [local patch 2026-10-27] 生成前召回长期记忆
+        const recentText = recent.filter(entry => entry.role === 'user').slice(-2).map(entry => entry.text ?? '').join(' ');
+        const wantsRecall = /记得|记不记|刚才|刚刚|上次|之前|以前|别的群|那个群|另一个群|提过|说过|聊过/.test(userText);
+        const longMemoryBlock = wantsRecall
+            ? (await this.longMemory?.recallBlock(userText, recentText, `qq:group:${groupId}`) ?? undefined)
+            : undefined;
+        if (longMemoryBlock !== undefined)
+            this.logger.info('qq-groupmate: 记忆召回 %s 字（群）', String(longMemoryBlock.length));
         const reply = await this.generateReply(groupId, config, {
             groupId,
             groupName: undefined,
@@ -865,6 +915,7 @@ export class GroupManager {
             speakerName: speakerName,
             userText,
             senderId,
+            longMemory: longMemoryBlock,
         });
         if (reply === undefined)
             return;
@@ -883,6 +934,11 @@ export class GroupManager {
         const stickerSent = this.outbound.takeStickers(String(groupId));
         const historyText = stickerSent === undefined ? reply : `${reply}\n（我刚发了一张表情包：${stickerSent}）`;
         this.appendHistory(groupId, { role: 'assistant', speaker: card.name, text: historyText, time: now });
+        // [local patch 2026-10-27] 这一轮写进长期记忆
+        void this.longMemory?.ingest(`qq:group:${groupId}`, [
+            { role: 'user', text: userText, sender: speakerName },
+            { role: 'assistant', text: reply },
+        ]);
         // 有意义的对话过后，按 mod 的分类规则看要不要挂一封信。
         this.notes?.consider(groupId, userText, reply);
         // 语音输出：按情绪挑参考音，后台合成完发一条 QQ 语音（失败只影响语音）。
@@ -948,6 +1004,65 @@ export class GroupManager {
      * [local patch 2026-10-22] 图片梗图查证（不依赖模型自觉）：
      * 1) 让视觉模型只输出关键词；2) 插件自己去 B 站 + Bing 查；3) 结果塞回上下文。
      */
+    /**
+     * [local patch 2026-10-27] 生成侧防复读：
+     * 把「和最近 3 条自己说过的话完全相同的句子」剪掉；全被剪光就不说话。
+     */
+    /**
+     * [local patch 2026-10-28] 模型自检：字面差距大、但可能在说同一件事时，问一次小模型。
+     * 只回答 YES/NO，成本约等于一次短请求。
+     */
+    async isSemanticRepeat(candidate, recentOwn, target) {
+        if (recentOwn.length === 0)
+            return false;
+        const prev = recentOwn.slice(-2).map((text, index) => `${index + 1}. ${String(text).slice(0, 80)}`).join('\n');
+        const system = '你是重复检测器，只输出 YES 或 NO，不要解释、不要标点。';
+        const prompt = `A（她准备说的话）：${String(candidate).slice(0, 100)}\n\nB（她刚才说过的话）：\n${prev}\n\n`
+            + 'A 和 B 里任意一条是不是在表达同一件事（包括换个说法的复述、同一个意思的叮嘱）？\n只回答 YES 或 NO。';
+        const result = await this.runModel(target, {
+            system,
+            messages: [createUserMessage({ content: [{ type: 'text', text: prompt }], source: { kind: 'user' } })],
+            temperature: 0,
+            maxTokens: 8,
+        });
+        return /\bYES\b|^是/iu.test(String(result.text ?? '').trim());
+    }
+
+    /** [local patch 2026-10-28] 是不是纯应答（嗯/好/晚安/睡了…），这类不该条条回。 */
+    isPureAck(text) {
+        const body = String(text ?? '').replace(/[\s，,。！？!?、~～…]/gu, '');
+        if (body === '')
+            return false;
+        return /^(嗯|哦|好|行|是|啊|诶|哎|晚安|睡|睡了|去睡|我睡了|拜拜|88|ok|OK)+$/u.test(body) && body.length <= 8;
+    }
+
+    dropRepeatedSentences(reply, scope) {
+        if (reply === undefined || reply === '')
+            return reply;
+        try {
+            const history = this.record(scope).history;
+            const recentOwn = history
+                .filter(entry => entry.role === 'assistant')
+                .slice(-5)
+                .map(entry => String(entry.text ?? ''))
+                .filter(text => text.trim() !== '');
+            const lastUser = [...history].reverse().find(entry => entry.role !== 'assistant');
+            const userText = String(lastUser?.text ?? '');
+            const out = stripRepeats(reply, recentOwn, userText);
+            if (out === undefined) {
+                this.logger.info('qq-groupmate: 整句与最近说过的话重复，改成不接话（%s）', scope);
+                return undefined;
+            }
+            if (out !== String(reply).trim())
+                this.logger.info('qq-groupmate: 剪掉重复句（%s），剩 %s 字', scope, String(out.length));
+            return out;
+        }
+        catch (error) {
+            this.logger.warn('qq-groupmate: 防复读处理失败（忽略）：%s', String(error));
+            return reply;
+        }
+    }
+
     async lookupMemeFromImages(images, target, scope) {
         if (this.tools === undefined || images.length === 0)
             return undefined;
@@ -1043,6 +1158,153 @@ export class GroupManager {
                 this.logger.info('qq-groupmate: 识图 %s 张，改用 %s / %s', String(images.length), target.provider, target.model);
             }
         }
+        // [local patch 2026-10-28] 连续刷屏节流：最近几条对方消息都是短句/互相很像 → 不接话
+        if (this.languageSettings.throttle !== false) try {
+            const history = this.record(scope).history;
+            const recentUser = [...history].reverse().filter(entry => entry.role !== 'assistant').slice(0, 3).map(entry => String(entry.text ?? ''));
+            const current = String(environment.userText ?? '');
+            let similarPairs = 0;
+            let shortCount = 0;
+            const pool = [current, ...recentUser].filter(Boolean);
+            for (const text of pool)
+                if (text.replace(/[\s，,。！？!?~～…]/gu, '').length <= 6)
+                    shortCount += 1;
+            for (let i = 0; i < pool.length; i += 1) {
+                for (let j = i + 1; j < pool.length; j += 1) {
+                    const a = pool[i].replace(/[\s，,。！？!?~～…]/gu, '');
+                    const b = pool[j].replace(/[\s，,。！？!?~～…]/gu, '');
+                    if (a !== '' && b !== '' && (a === b || a.includes(b) || b.includes(a)))
+                        similarPairs += 1;
+                }
+            }
+            if (pool.length >= 3 && (similarPairs >= 2 || (shortCount >= 4 && similarPairs >= 1))) {
+                this.logger.info('qq-groupmate: 连续刷屏节流，跳过接话（%s）', scope);
+                return undefined;
+            }
+        }
+        catch { /* 忽略 */ }
+        // [local patch 2026-10-28] 纯应答不接话：对方只发「嗯/晚安」，上一条她也只是应答，就别再嗯回去
+        try {
+            const userText = String(environment.userText ?? '');
+            if (this.isPureAck(userText)) {
+                const lastOwn = this.record(scope).history.filter(entry => entry.role === 'assistant').slice(-1)[0];
+                const lastText = String(lastOwn?.text ?? '');
+                if (lastText !== '' && this.isPureAck(lastText)) {
+                    this.logger.info('qq-groupmate: 对方只是应答且上条也短，跳过接话（%s）', scope);
+                    return undefined;
+                }
+            }
+        }
+        catch { /* 忽略 */ }
+        // [local patch 2026-10-28] 查一下有没有「权重过高的词」，有就让模型判断要不要掐
+        try {
+            const history = this.record(scope).history;
+            const recentOwn = history.filter(entry => entry.role === 'assistant').slice(-5).map(entry => String(entry.text ?? ''));
+            const recentUser = history.filter(entry => entry.role !== 'assistant').slice(-4).map(entry => String(entry.text ?? ''));
+            // [local patch 2026-10-28] 概率自增强：某个词一条比一条多 → 提前掐，不等它塌缩
+            const userBody = recentUser.join(' ');
+            for (const item of escalatingPhrases(recentOwn)) {
+                if (userBody.includes(item.phrase))
+                    continue;
+                if (this.wordClipper.has(scope, item.phrase, recentOwn, recentUser))
+                    continue;
+                this.wordClipper.clip(scope, item.phrase);
+                this.logger.info('qq-groupmate: 概率自增强「%s」出现次数 %s，已掐掉（%s）', item.phrase, item.series.join('→'), scope);
+            }
+            const suspects = suspectPhrases(recentOwn, recentUser);
+            const wordClipOn = this.languageSettings.wordClip !== false;
+            const fresh = wordClipOn ? suspects.filter(item => !this.wordClipper.has(scope, item.phrase, recentOwn)) : [];
+            if (fresh.length > 0) {
+                const phrase = fresh[0].phrase;
+                const conversation = history.slice(-8).map(entry => `${entry.role === 'assistant' ? '她' : '群友'}：${String(entry.text ?? '').slice(0, 60)}`).join('\n');
+                const judge = await this.runModel(target, {
+                    system: '你是对话分析器，只输出 KEEP 或 CLIP，不要解释。',
+                    messages: [createUserMessage({ content: [{ type: 'text', text:
+                        `她最近反复提到「${phrase}」。判断：这是群友正在聊的话题（KEEP），还是她自己在揪着不放、该从输出里删掉（CLIP）？\n\n${conversation}\n\n只回答 KEEP 或 CLIP。` }], source: { kind: 'user' } })],
+                    temperature: 0,
+                    maxTokens: 6,
+                });
+                const verdict = String(judge.text ?? '').trim().toUpperCase();
+                if (verdict.includes('CLIP') || verdict.includes('BAN')) {
+                    this.wordClipper.clip(scope, phrase);
+                    this.logger.info('qq-groupmate: 已从输出里删除词句「%s」（%s）', phrase, scope);
+                }
+                else {
+                    this.logger.info('qq-groupmate: 词「%s」是正常话题，保留（%s）', phrase, scope);
+                }
+            }
+        }
+        catch (error) {
+            this.logger.warn('qq-groupmate: 词句权重判断失败（忽略）：%s', String(error));
+        }
+        // [local patch 2026-10-27] 识图缓存 + 本地 OCR：同图不重复看，字先本地读
+        let visionNote;
+        let visionHashes = [];
+        if (images.length > 0) {
+            const askDetail = /看|这张|那图|图里|图上|什么字|写了|谁|哪|几|多少|颜色|梗|表情包|截|报错|代码|价格|长啥/.test(String(environment.userText ?? ''));
+            // ① 先看是不是本地表情包库里有的（命中就完全不用模型看）
+            try {
+                if (this.mediaSettings.stickerMatch === false)
+                    throw new Error('stickerMatch-off');
+                const fingerprints = dHashes(images.map(item => item.buffer));
+                const matched = fingerprints.map(hash => this.stickerIndex?.match(hash));
+                if (matched.length === images.length && matched.every(name => name !== undefined)) {
+                    visionNote = '# 这是本地表情包（直接当表情用，可以发 [表情:名字]）\n'
+                        + matched.map((name, index) => `${index + 1}. ${name}`).join('\n');
+                    images = [];
+                    this.logger.info('qq-groupmate: 表情包命中 %s 张，跳过视觉调用', String(matched.length));
+                }
+            }
+            catch (error) {
+                this.logger.warn('qq-groupmate: 表情包匹配失败（忽略）：%s', String(error));
+            }
+            // ② 多图拼成一张，省一次调用
+            if (images.length >= 2 && this.mediaSettings.grid !== false) {
+                try {
+                    const grid = gridImages(images.map(item => item.buffer), this.logger);
+                    if (grid !== undefined) {
+                        images = [{ buffer: grid.buffer, mime: grid.mime }];
+                        visionNote = (visionNote === undefined ? '' : `${visionNote}\n`)
+                            + `# 注意：这张图是把 ${String(grid.count)} 张图拼在一起的网格，按位置分别描述\n`;
+                    }
+                }
+                catch (error) {
+                    this.logger.warn('qq-groupmate: 拼图失败（忽略）：%s', String(error));
+                }
+            }
+            visionHashes = images.map(item => VisionCache.hash(item.buffer));
+            const hits = this.mediaSettings.cache === false
+                ? visionHashes.map(() => undefined)
+                : visionHashes.map(hash => this.visionCache?.get(hash));
+            const allCached = hits.length === images.length && hits.every(hit => hit !== undefined);
+            if (allCached && !askDetail) {
+                visionNote = '# 这张图你看过（直接用，不用再描述）\n' + hits.map((hit, index) => `${index + 1}. ${hit.desc}`).join('\n');
+                images = [];
+                this.logger.info('qq-groupmate: 识图缓存命中 %s 张，跳过视觉调用', String(hits.length));
+            }
+            else {
+                const ocrLines = [];
+                for (let index = 0; index < images.length; index += 1) {
+                    if (hits[index] !== undefined)
+                        continue;
+                    if (this.mediaSettings.ocr === false)
+                        continue;
+                    try {
+                        const text = await ocrImage(images[index].buffer, {
+                            logger: this.logger,
+                            baseUrl: this.mediaSettings.ocrUrl?.trim() === '' || this.mediaSettings.ocrUrl === undefined
+                                ? undefined
+                                : String(this.mediaSettings.ocrUrl),
+                        });
+                        if (text !== undefined)
+                            ocrLines.push(`图${index + 1}的文字：${text}`);
+                    }
+                    catch { /* 忽略 */ }
+                }
+                if (ocrLines.length > 0)
+                    visionNote = '# 图里的文字（本地 OCR，优先采信）\n' + ocrLines.join('\n');
+            }
+        }
         // [local patch 2026-10-22] 图片自动查证：模型只要给关键词，查证由插件完成
         let imageLookup;
         if (images.length > 0) {
@@ -1090,10 +1352,14 @@ export class GroupManager {
         const history = trimHistory(visible, Math.max(1, config.maxTurns) + block, config.maxChars);
         if (history.length === 0)
             return undefined;
+        const recentOwnForScrub = history.filter(entry => entry.role === 'assistant').slice(-6).map(entry => String(entry.text ?? ''));
         const messages = history.map((entry) => {
             if (entry.role === 'assistant') {
+                const cleaned = this.wordClipper.scrubText(scope, entry.text, recentOwnForScrub);
+                if (cleaned === '')
+                    return undefined;
                 return createAssistantMessage({
-                    content: [{ type: 'text', text: entry.text }],
+                    content: [{ type: 'text', text: cleaned }],
                     source: { provider: config.provider, model: config.model },
                 });
             }
@@ -1101,11 +1367,12 @@ export class GroupManager {
             const tagged = card.adminTag !== undefined
                 && entry.userId !== undefined
                 && this.defaults.admins.includes(entry.userId);
+            const userTextScrubbed = this.wordClipper.scrubUser(scope, entry.text, recentOwnForScrub, []);
             return createUserMessage({
-                content: [{ type: 'text', text: `${speakerLabel(entry)}${tagged ? card.adminTag : ''}: ${entry.text}` }],
+                content: [{ type: 'text', text: `${speakerLabel(entry)}${tagged ? card.adminTag : ''}: ${userTextScrubbed}` }],
                 source: { kind: 'user' },
             });
-        });
+        }).filter(message => message !== undefined);
         // 称呼概率规则：绝大多数时候不叫名字，隔几轮、对方带情绪时更容易叫一次。
         let nameGuidance;
         if (environment.speakerName !== undefined && environment.userText !== undefined) {
@@ -1189,7 +1456,22 @@ export class GroupManager {
         }
         // 每轮都会变的运行时上下文（记忆、知识检索、群友档案、称呼、天气、成员）单独成块，
         // 插到消息序列末尾——理由见 prompt.js 顶部关于「请求前缀缓存」的说明。
+        // [local patch 2026-10-27] 命中缓存/OCR 时，把「这张图是什么」作为文字补进去
+        if (visionNote !== undefined) {
+            try {
+                this.logger.info('qq-groupmate: 识图附注 %s 字', String(visionNote.length));
+            }
+            catch { /* 忽略 */ }
+        }
+        const recentOwnForBalance = this.record(scope).history
+            .filter(entry => entry.role === 'assistant').slice(-6)
+            .map(entry => String(entry.text ?? ''));
+        const recentUserForBalance = this.record(scope).history
+            .filter(entry => entry.role !== 'assistant').slice(-4)
+            .map(entry => String(entry.text ?? ''));
         const contextBlock = buildContextBlock({
+            visionNote,
+            topicBalance: this.wordClipper.balanceHint(scope, recentOwnForBalance, recentUserForBalance),
             relationship,
             slang,
             evolution,
@@ -1197,6 +1479,8 @@ export class GroupManager {
             mood: this.mood?.describe(scope) ?? undefined,
             // [local patch 2026-10-26] B站学到的梗/说法
             memes: this.biliMemes?.formatForPrompt(),
+            // [local patch 2026-10-27] 长期记忆召回块
+            longMemory: environment.longMemory,
             members: environment.members,
             knowledge: this.knowledge === undefined
                 ? undefined
@@ -1210,7 +1494,8 @@ export class GroupManager {
                 ? `有人刚发了 ${String(images.length)} 张图，你直接看到了图片内容，自然点回应，别说「我看不到图片」。\n`
                     + '看图流程：① 先用一两句说出你看到的画面（谁、在干嘛、什么表情、什么字）；'
                     + '② 如果像是梗图、表情包，或者对方问「什么梗/出处」，必须先写 `[查梗:关键词]`，查不到再写 `[搜索:关键词 梗 出处]`；'
-                    + '③ 拿到结果后用自己的话说结论；两样都没结果就直说「这张本鱼没见过」，不许硬编。'
+                    + '③ 拿到结果后用自己的话说结论；两样都没结果就直说「这张本鱼没见过」，不许硬编。\n'
+                    + '④ 回复末尾另起一行写 `[[图:不超过60字的一句话描述]]`：这是给缓存用的，不会发给群友。'
                     + (imageLookup === undefined
                         ? ''
                         : `\n\n【插件已替你查过，以下为查证结果】\n${imageLookup}\n`
@@ -1265,7 +1550,49 @@ export class GroupManager {
         // 日文语音模式：模型给的是 {"display_text": 中文, "speech_ja": 日文}——
         // 群友看的正文用 display_text，拿去合成的用 speech_ja（见 voice.js 的 parseVoiceModeJson）。
         const voiceMode = this.voice?.japaneseVoiceMode === true ? parseVoiceModeJson(looped.text) : undefined;
-        const reply = sanitizeReply(voiceMode === undefined ? looped.text : voiceMode.display);
+        let reply = sanitizeReply(voiceMode === undefined ? looped.text : voiceMode.display);
+        // [local patch 2026-10-27] 取出缓存标记并写入识图缓存
+        if (reply !== undefined) {
+            const marker = /\[\[图[：:]\s*([^\]]{1,300})\]\]/u.exec(reply);
+            if (marker !== null) {
+                reply = reply.replace(marker[0], '').trim();
+                if (visionHashes.length > 0)
+                    this.visionCache?.set(visionHashes[0], marker[1]);
+            }
+        }
+        // [local patch 2026-10-28] 硬删除：含删除词的句子直接从输出里剪掉
+        if (reply !== undefined && this.languageSettings.wordClip !== false) {
+            const before = reply;
+            const recentOwnForClip = this.record(scope).history.filter(entry => entry.role === 'assistant').slice(-6).map(entry => String(entry.text ?? ''));
+            const recentUserForClip = this.record(scope).history.filter(entry => entry.role !== 'assistant').slice(-4).map(entry => String(entry.text ?? ''));
+            reply = this.wordClipper.cut(scope, reply, recentOwnForClip, recentUserForClip);
+            if (reply !== before)
+                this.logger.info('qq-groupmate: 已删除输出中的词句（%s）', scope);
+        }
+        if (this.mediaSettings.antiRepeat !== false) {
+            reply = this.dropRepeatedSentences(reply, scope);
+            // 字面差距大、但语义可能重复：再过一次模型自检
+            if (reply !== undefined) {
+                try {
+                    const history = this.record(scope).history;
+                    const recentOwn = history.filter(entry => entry.role === 'assistant').slice(-5).map(entry => String(entry.text ?? ''));
+                    let maxSim = 0;
+                    for (const prev of recentOwn)
+                        maxSim = Math.max(maxSim, similarity(reply, prev));
+                    const threshold = Number(this.languageSettings.semanticThreshold ?? 0.22);
+                    if (this.languageSettings.semanticCheck !== false && maxSim >= threshold) {
+                        const repeat = await this.isSemanticRepeat(reply, recentOwn, target);
+                        if (repeat === true) {
+                            this.logger.info('qq-groupmate: 模型自检判定重复，不接话（%s）', scope);
+                            reply = undefined;
+                        }
+                    }
+                }
+                catch (error) {
+                    this.logger.warn('qq-groupmate: 模型自检失败（忽略）：%s', String(error));
+                }
+            }
+        }
         if (reply === undefined) {
             this.logger.debug?.('qq-groupmate: 模型选择不接话（%s）', scope);
             // 正文空了但确实定了提醒：也要把回执发出去，不然群友以为没说。
@@ -1379,6 +1706,9 @@ export class GroupManager {
                 signal: controller.signal,
                 ...(target.backup === undefined ? {} : { backup: target.backup }),
                 ...(request.images === undefined || request.images.length === 0 ? {} : { images: request.images }),
+                // [local patch 2026-10-28] 频率惩罚（只有自定义 provider 会真正带上）
+                ...(this.penaltySettings?.frequency === undefined ? {} : { frequencyPenalty: this.penaltySettings.frequency }),
+                ...(this.penaltySettings?.presence === undefined ? {} : { presencePenalty: this.penaltySettings.presence }),
             });
             for await (const chunk of stream) {
                 if (chunk.type === 'text-delta')

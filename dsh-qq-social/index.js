@@ -1,17 +1,20 @@
 /**
  * dsh-qq-social —— QQ 群里大肥鱼的「拟人化」设置（桌面端设置分栏）
  *
- * 数据落在 <QQ_HOME>\\social.json，由 QQ 桥实例启动时读取。
+ * 数据落在 DSH_QQ_HOME/social.json（默认 ~/dsh-qq/social.json），由 QQ 桥实例启动时读取。
  * 保存后可选自动重启 QQ 桥，让开关立刻生效。
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
+import { homedir } from 'node:os'
+
+const QQ_HOME = process.env.DSH_QQ_HOME ?? join(homedir(), 'dsh-qq')
 import { execFile } from 'node:child_process'
 import { connect } from 'node:net'
 
 export const name = 'qq-social'
 
-const CONFIG_PATH = '<QQ_HOME>\\social.json'
+const CONFIG_PATH = join(QQ_HOME, 'social.json')
 const ROUTE = '/dsh-qq-social-api'
 
 const DEFAULTS = {
@@ -33,6 +36,23 @@ const DEFAULTS = {
   webVisible: true,
   webMaxSteps: 12,
   webTimeoutMinutes: 4,
+  // [local patch 2026-10-27] 识图加速与记忆召回
+  mediaCache: true,
+  mediaOcr: true,
+  mediaOcrUrl: 'http://127.0.0.1:1224',
+  mediaGrid: true,
+  mediaStickerMatch: true,
+  mediaAntiRepeat: true,
+  memoryRecallEnabled: true,
+  memoryFactCooldownHours: 3,
+  // [local patch 2026-10-28] 语言卫生：防复读 / 词句权重
+  languageThrottle: true,
+  languageWordClip: true,
+  languageClipRatio: 1.3,
+  languageSemanticCheck: true,
+  languageSemanticThreshold: 0.22,
+  languageFrequencyPenalty: 0.5,
+  languagePresencePenalty: 0.2,
 }
 
 function normalize(input) {
@@ -42,6 +62,9 @@ function normalize(input) {
   const guard = source.guard !== null && typeof source.guard === 'object' ? source.guard : {}
   const vision = source.vision !== null && typeof source.vision === 'object' ? source.vision : {}
   const web = source.web !== null && typeof source.web === 'object' ? source.web : {}
+  const media = source.media !== null && typeof source.media === 'object' ? source.media : {}
+  const memoryRecall = source.memoryRecall !== null && typeof source.memoryRecall === 'object' ? source.memoryRecall : {}
+  const language = source.language !== null && typeof source.language === 'object' ? source.language : {}
   const pickBool = (value, fallback) => (typeof value === 'boolean' ? value : fallback)
   const bool = (value, fallback) => pickBool(value, fallback)
   const num = (value, min, max, fallback) => {
@@ -69,6 +92,21 @@ function normalize(input) {
     webVisible: pickBool(web.visible, pickBool(source.webVisible, DEFAULTS.webVisible)),
     webMaxSteps: num(web.maxSteps ?? source.webMaxSteps, 1, 30, DEFAULTS.webMaxSteps),
     webTimeoutMinutes: num(web.timeoutMinutes ?? source.webTimeoutMinutes, 1, 15, DEFAULTS.webTimeoutMinutes),
+    mediaCache: pickBool(media.cache, pickBool(source.mediaCache, DEFAULTS.mediaCache)),
+    mediaOcr: pickBool(media.ocr, pickBool(source.mediaOcr, DEFAULTS.mediaOcr)),
+    mediaOcrUrl: String(media.ocrUrl ?? source.mediaOcrUrl ?? DEFAULTS.mediaOcrUrl).slice(0, 120),
+    mediaGrid: pickBool(media.grid, pickBool(source.mediaGrid, DEFAULTS.mediaGrid)),
+    mediaStickerMatch: pickBool(media.stickerMatch, pickBool(source.mediaStickerMatch, DEFAULTS.mediaStickerMatch)),
+    mediaAntiRepeat: pickBool(media.antiRepeat, pickBool(source.mediaAntiRepeat, DEFAULTS.mediaAntiRepeat)),
+    memoryRecallEnabled: pickBool(memoryRecall.enabled, pickBool(source.memoryRecallEnabled, DEFAULTS.memoryRecallEnabled)),
+    memoryFactCooldownHours: num(memoryRecall.factCooldownHours ?? source.memoryFactCooldownHours, 1, 72, DEFAULTS.memoryFactCooldownHours),
+    languageThrottle: pickBool(language.throttle, pickBool(source.languageThrottle, DEFAULTS.languageThrottle)),
+    languageWordClip: pickBool(language.wordClip, pickBool(source.languageWordClip, DEFAULTS.languageWordClip)),
+    languageClipRatio: Math.min(3, Math.max(1, Number(language.clipRatio ?? source.languageClipRatio ?? DEFAULTS.languageClipRatio))),
+    languageSemanticCheck: pickBool(language.semanticCheck, pickBool(source.languageSemanticCheck, DEFAULTS.languageSemanticCheck)),
+    languageSemanticThreshold: Math.min(1, Math.max(0, Number(language.semanticThreshold ?? source.languageSemanticThreshold ?? DEFAULTS.languageSemanticThreshold))),
+    languageFrequencyPenalty: Math.min(2, Math.max(0, Number(language.frequencyPenalty ?? source.languageFrequencyPenalty ?? DEFAULTS.languageFrequencyPenalty))),
+    languagePresencePenalty: Math.min(2, Math.max(0, Number(language.presencePenalty ?? source.languagePresencePenalty ?? DEFAULTS.languagePresencePenalty))),
   }
 }
 
@@ -86,7 +124,16 @@ function readConfig() {
 function writeConfig(next) {
   mkdirSync(dirname(CONFIG_PATH), { recursive: true })
   // social.json 是「扁平 social 字段 + 两个嵌套块」的混合结构，qq-groupmate 两个都认
-  const { moodEnabled, moodDurationHours, guardMuteCheck, guardMaxRepliesPerMinute, visionEnabled, visionModel, visionMaxImages, webEnabled, webVisible, webMaxSteps, webTimeoutMinutes, ...flat } = next
+  const {
+    moodEnabled, moodDurationHours, guardMuteCheck, guardMaxRepliesPerMinute,
+    visionEnabled, visionModel, visionMaxImages,
+    webEnabled, webVisible, webMaxSteps, webTimeoutMinutes,
+    mediaCache, mediaOcr, mediaOcrUrl, mediaGrid, mediaStickerMatch, mediaAntiRepeat,
+    memoryRecallEnabled, memoryFactCooldownHours,
+    languageThrottle, languageWordClip, languageClipRatio, languageSemanticCheck,
+    languageSemanticThreshold, languageFrequencyPenalty, languagePresencePenalty,
+    ...flat
+  } = next
   const payload = {
     ...flat,
     mood: { enabled: moodEnabled !== false, durationHours: moodDurationHours ?? 4 },
@@ -106,13 +153,35 @@ function writeConfig(next) {
       maxSteps: webMaxSteps ?? 12,
       timeoutMinutes: webTimeoutMinutes ?? 4,
     },
+    media: {
+      cache: mediaCache !== false,
+      ocr: mediaOcr !== false,
+      ocrUrl: mediaOcrUrl || 'http://127.0.0.1:1224',
+      grid: mediaGrid !== false,
+      stickerMatch: mediaStickerMatch !== false,
+      antiRepeat: mediaAntiRepeat !== false,
+    },
+    memoryRecall: {
+      enabled: memoryRecallEnabled !== false,
+      factCooldownHours: memoryFactCooldownHours ?? 3,
+      recentLines: 2,
+    },
+    language: {
+      throttle: languageThrottle !== false,
+      wordClip: languageWordClip !== false,
+      clipRatio: languageClipRatio ?? 1.3,
+      semanticCheck: languageSemanticCheck !== false,
+      semanticThreshold: languageSemanticThreshold ?? 0.22,
+      frequencyPenalty: languageFrequencyPenalty ?? 0.5,
+      presencePenalty: languagePresencePenalty ?? 0.2,
+    },
   }
   writeFileSync(CONFIG_PATH, `${JSON.stringify(payload, null, 2)}\n`, 'utf8')
 }
 
 function restartBridge() {
-  execFile('cmd.exe', ['/c', '<QQ_HOME>\\stop-qq.cmd'], { windowsHide: true }, () => {
-    execFile('wscript.exe', ['<QQ_HOME>\\start-qq-hidden.vbs'], { windowsHide: true }, () => {})
+  execFile('cmd.exe', ['/c', join(QQ_HOME, 'stop-qq.cmd')], { windowsHide: true }, () => {
+    execFile('wscript.exe', [join(QQ_HOME, 'start-qq-hidden.vbs')], { windowsHide: true }, () => {})
   })
 }
 
@@ -139,12 +208,15 @@ function portOpen(port) {
   })
 }
 
-const BRIDGE_START = '<QQ_HOME>\\start-qq-hidden.vbs'
-const NAPCAT_START = '<QQ_HOME>\\start-napcat.cmd'
-const AFFINITY_PATH = '<QQ_HOME>\\home\\qq-groupmate\\affinity.json'
-const MEMES_PATH = '<QQ_HOME>\\home\\qq-groupmate\\bili-memes.json'
-const GROWTH_PATH = '<QQ_HOME>\\home\\qq-groupmate\\card-growth.json'
-const AYU_LEARN = { python: '<PYTHON_EXE>', script: '<QQ_HOME>\\ayu-learn.py' }
+const BRIDGE_START = join(QQ_HOME, 'start-qq-hidden.vbs')
+const NAPCAT_START = join(QQ_HOME, 'start-napcat.cmd')
+const AFFINITY_PATH = join(QQ_HOME, 'home', 'qq-groupmate', 'affinity.json')
+const MEMES_PATH = join(QQ_HOME, 'home', 'qq-groupmate', 'bili-memes.json')
+const GROWTH_PATH = join(QQ_HOME, 'home', 'qq-groupmate', 'card-growth.json')
+const AYU_LEARN = {
+  python: process.env.AYU_PYTHON ?? 'python',
+  script: process.env.AYU_LEARN_SCRIPT ?? join(QQ_HOME, 'ayu-learn.py'),
+}
 
 /** 读「人格卡学习记录」（每次学习的版本快照摘要）。 */
 function readGrowth() {
@@ -183,7 +255,7 @@ function writeMemes(data) {
   mkdirSync(dirname(MEMES_PATH), { recursive: true })
   writeFileSync(MEMES_PATH, `${JSON.stringify(data, null, 2)}\n`, 'utf8')
 }
-const BILI_CONFIG = '<DSH_HOME>\\bili-duty\\config.json'
+const BILI_CONFIG = process.env.BILI_DUTY_CONFIG ?? join(homedir(), '.dsh', 'bili-duty', 'config.json')
 
 /** 读「刷B站」的简化配置（只给快捷模式用）。 */
 function readBiliConfig() {

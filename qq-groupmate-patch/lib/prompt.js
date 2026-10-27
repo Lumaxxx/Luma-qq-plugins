@@ -191,6 +191,18 @@ export function buildContextBlock(context) {
     if (context.mood !== undefined && context.mood !== '') {
         sections.push(clipSection(context.mood, CONTEXT_BUDGET.memory, '心情'));
     }
+    // [local patch 2026-10-28] 词句权重平衡：把注意力分给别的话题
+    if (context.topicBalance !== undefined && context.topicBalance !== '') {
+        sections.push(clipSection(context.topicBalance, CONTEXT_BUDGET.memory, '话题平衡'));
+    }
+    // [local patch 2026-10-27] 识图缓存/本地 OCR 附注
+    if (context.visionNote !== undefined && context.visionNote !== '') {
+        sections.push(clipSection(context.visionNote, CONTEXT_BUDGET.memory, '识图附注'));
+    }
+    // [local patch 2026-10-27] 长期记忆（宿主记忆插件召回）
+    if (context.longMemory !== undefined && context.longMemory !== '') {
+        sections.push(clipSection(context.longMemory, CONTEXT_BUDGET.memory, '记忆'));
+    }
     // [local patch 2026-10-26] B站学到的梗与说法
     if (context.memes !== undefined && context.memes !== '') {
         sections.push(clipSection(context.memes, CONTEXT_BUDGET.memory, '梗'));

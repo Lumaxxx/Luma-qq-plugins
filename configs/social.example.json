@@ -1,23 +1,32 @@
 {
-    "affinityEnabled":  true,
-    "slangEnabled":  true,
-    "personaEvolutionEnabled":  true,
-    "cardEvolutionEnabled":  true,
-    "triggerWindowMinutes":  5,
-    "evolutionRefreshEvery":  60,
-    "personaNote":  "",
-    "mood":  {
-                 "enabled":  true,
-                 "durationHours":  4
-             },
-    "guard":  {
-                  "muteCheck":  true,
-                  "muteCacheSeconds":  20,
-                  "maxRepliesPerMinute":  4
-              },
-    "vision":  {
-                   "enabled":  true,
-                   "model":  "vision-api",
-                   "maxImages":  3
-               }
+  "affinityEnabled": true,
+  "slangEnabled": true,
+  "personaEvolutionEnabled": true,
+  "cardEvolutionEnabled": true,
+  "triggerWindowMinutes": 5,
+  "evolutionRefreshEvery": 60,
+  "personaNote": "",
+  "mood": {
+    "enabled": true,
+    "durationHours": 4
+  },
+  "guard": {
+    "muteCheck": true,
+    "muteCacheSeconds": 20,
+    "maxRepliesPerMinute": 4
+  },
+  "vision": {
+    "enabled": true,
+    "model": "vision-api",
+    "maxImages": 3
+  },
+  "language": {
+    "throttle": true,
+    "wordClip": true,
+    "clipRatio": 1.3,
+    "semanticCheck": true,
+    "semanticThreshold": 0.22,
+    "frequencyPenalty": 0.5,
+    "presencePenalty": 0.2
+  }
 }
